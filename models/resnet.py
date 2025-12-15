@@ -77,6 +77,16 @@ class ResNet(nn.Module):
         self.layer4 = self._make_layer(block, 512, num_blocks[3], stride=2)
         self.linear = nn.Linear(512*block.expansion, num_classes)
 
+        size = 0
+        size_require_grad = 0
+        for p in self.parameters():
+            if p.requires_grad:
+                size_require_grad += p.nelement()
+            size += p.nelement()
+        print('param size required training: {:.2f}'.format(size_require_grad / 1e6))
+        print('Total param size: {:.2f}'.format(size / 1e6))  # 衡量模型的参数数量以判断它的大小
+        self.param_size = size
+        self.grad_param_size = size_require_grad
     def _make_layer(self, block, planes, num_blocks, stride):
         strides = [stride] + [1]*(num_blocks-1)
         layers = []

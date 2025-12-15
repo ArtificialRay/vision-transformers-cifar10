@@ -53,11 +53,11 @@ parser.add_argument('--dataset', default='cifar10', type=str, help='dataset to u
 args = parser.parse_args()
 
 # take in args
-usewandb = ~args.nowandb
+usewandb = not args.nowandb
 if usewandb:
     import wandb
     watermark = "{}_lr{}_{}".format(args.net, args.lr, args.dataset)
-    wandb.init(project="cifar-challenge",
+    wandb.init(project="cifar100-challenge",
             name=watermark)
     wandb.config.update(args)
 
@@ -130,8 +130,14 @@ print('==> Building model..')
 # net = VGG('VGG19')
 if args.net=='res18':
     net = ResNet18(num_classes=num_classes)
-elif args.net=='vgg':
-    net = VGG('VGG19', num_classes=num_classes)
+elif args.net=='vgg11':
+    net = VGG('VGG11')
+elif args.net=='vgg13':
+    net = VGG('VGG13')
+elif args.net=='vgg16':
+    net = VGG('VGG16')
+elif args.net=='vgg19':
+    net = VGG('VGG19')
 elif args.net=='res34':
     net = ResNet34(num_classes=num_classes)
 elif args.net=='res50':
@@ -367,6 +373,16 @@ if usewandb:
     wandb.watch(net)
     
 net.cuda()
+
+# measure FLOPs
+from torchprofile import profile_macs
+d_input = torch.randn(1, 3, imsize, imsize).to(device)
+net.eval()
+macs = profile_macs(net,d_input)
+net.FLOPs = macs
+net.train()
+print(f"FLOPs: {net.FLOPs/1e9:.3f}")
+
 for epoch in range(start_epoch, args.n_epochs):
     start = time.time()
     trainloss = train(epoch)

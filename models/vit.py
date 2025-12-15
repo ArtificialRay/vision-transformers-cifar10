@@ -109,6 +109,17 @@ class ViT(nn.Module):
             nn.Linear(dim, num_classes)
         )
 
+        size = 0
+        size_require_grad = 0
+        for p in self.parameters():
+            if p.requires_grad:
+                size_require_grad += p.nelement()
+            size += p.nelement()
+        print('param size required training: {:.2f}'.format(size_require_grad / 1e6))
+        print('Total param size: {:.2f}'.format(size / 1e6))  # 衡量模型的参数数量以判断它的大小
+        self.param_size = size
+        self.grad_param_size = size_require_grad
+
     def forward(self, img):
         x = self.to_patch_embedding(img)
         b, n, _ = x.shape
