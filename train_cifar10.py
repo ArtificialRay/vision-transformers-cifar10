@@ -13,13 +13,13 @@ import torch.optim as optim
 import torch.nn.functional as F
 import torch.backends.cudnn as cudnn
 import numpy as np
+from timm.utils import *
 
 import torchvision
 import torchvision.transforms as transforms
 
 import os
 import argparse
-import pandas as pd
 import csv
 import time
 
@@ -49,6 +49,7 @@ parser.add_argument('--patch', default='4', type=int, help="patch for ViT")
 parser.add_argument('--dimhead', default="512", type=int)
 parser.add_argument('--convkernel', default='8', type=int, help="parameter for convmixer")
 parser.add_argument('--dataset', default='cifar10', type=str, help='dataset to use (cifar10 or cifar100)')
+parser.add_argument('--data-path', default='./data', type=str, help='path to dataset')
 
 args = parser.parse_args()
 
@@ -112,10 +113,10 @@ if aug:
     transform_train.transforms.insert(0, RandAugment(N, M))
 
 # Prepare dataset
-trainset = dataset_class(root='./data', train=True, download=True, transform=transform_train)
+trainset = dataset_class(root=args.data_path, train=True, download=True, transform=transform_train)
 trainloader = torch.utils.data.DataLoader(trainset, batch_size=bs, shuffle=True, num_workers=8)
 
-testset = dataset_class(root='./data', train=False, download=True, transform=transform_test)
+testset = dataset_class(root=args.data_path, train=False, download=True, transform=transform_test)
 testloader = torch.utils.data.DataLoader(testset, batch_size=100, shuffle=False, num_workers=8)
 
 # Set up class names based on the dataset
@@ -131,13 +132,13 @@ print('==> Building model..')
 if args.net=='res18':
     net = ResNet18(num_classes=num_classes)
 elif args.net=='vgg11':
-    net = VGG('VGG11')
+    net = VGG('VGG11',num_classes=num_classes)
 elif args.net=='vgg13':
-    net = VGG('VGG13')
+    net = VGG('VGG13',num_classes=num_classes)
 elif args.net=='vgg16':
-    net = VGG('VGG16')
+    net = VGG('VGG16',num_classes=num_classes)
 elif args.net=='vgg19':
-    net = VGG('VGG19')
+    net = VGG('VGG19',num_classes=num_classes)
 elif args.net=='res34':
     net = ResNet34(num_classes=num_classes)
 elif args.net=='res50':
@@ -324,6 +325,10 @@ def train(epoch):
 ##### Validation
 def test(epoch):
     global best_acc
+    losses_m = AverageMeter()
+    top1_m = AverageMeter()
+    top5_m = AverageMeter()
+
     net.eval()
     test_loss = 0
     correct = 0
@@ -335,39 +340,47 @@ def test(epoch):
             loss = criterion(outputs, targets)
 
             test_loss += loss.item()
-            _, predicted = outputs.max(1)
-            total += targets.size(0)
-            correct += predicted.eq(targets).sum().item()
+            # measure loss and acc
+            losses_m.update(loss.item(), inputs.size(0))
+            acc1,acc5 = accuracy(outputs, targets, topk=(1,5))
+            top1_m.update(acc1.item(), inputs.size(0))
+            top5_m.update(acc5.item(), inputs.size(0))
+            # _, predicted = outputs.max(1)
+            # total += targets.size(0)
+            # correct += predicted.eq(targets).sum().item()
 
-            progress_bar(batch_idx, len(testloader), 'Loss: %.3f | Acc: %.3f%% (%d/%d)'
-                % (test_loss/(batch_idx+1), 100.*correct/total, correct, total))
+            progress_bar(batch_idx, len(testloader), 'Loss: %.3f | Top1-Acc: %.3f%% | Top5-Acc: %.3f%%'
+                % (test_loss/(batch_idx+1), acc1, acc5))
     
     # Save checkpoint.
-    acc = 100.*correct/total
-    if acc > best_acc:
+    acc1 = top1_m.avg
+    acc5 = top5_m.avg
+    if acc1 > best_acc:
         print('Saving..')
         state = {
             "net": net.state_dict(),
             "optimizer": optimizer.state_dict(),
             "scaler": scaler.state_dict(),
-            "acc": acc,
+            "Top-1 acc": acc1,
+            "Top-5 acc": acc5,
             "epoch": epoch,
         }
         if not os.path.isdir('checkpoint'):
             os.mkdir('checkpoint')
         torch.save(state, './checkpoint/{}-{}-{}-ckpt.t7'.format(args.net, args.dataset, args.patch))
-        best_acc = acc
+        best_acc = acc1
     
     os.makedirs("log", exist_ok=True)
-    content = time.ctime() + ' ' + f'Epoch {epoch}, lr: {optimizer.param_groups[0]["lr"]:.7f}, val loss: {test_loss:.5f}, acc: {(acc):.5f}'
+    content = time.ctime() + ' ' + f'Epoch {epoch}, lr: {optimizer.param_groups[0]["lr"]:.7f}, val loss: {test_loss:.5f}, top1 accuracy: {(acc1):.5f}, top5 accuracy: {(acc5):.5f}'
     print(content)
     log_file = f'log/log_{args.net}_{args.dataset}_patch{args.patch}.txt'
     with open(log_file, 'a') as appender:
         appender.write(content + "\n")
-    return test_loss, acc
+    return losses_m.avg, acc1,acc5
 
 list_loss = []
-list_acc = []
+list_acc1 = []
+list_acc5 = []
 
 if usewandb:
     wandb.watch(net)
@@ -386,16 +399,17 @@ print(f"FLOPs: {net.FLOPs/1e9:.3f}")
 for epoch in range(start_epoch, args.n_epochs):
     start = time.time()
     trainloss = train(epoch)
-    val_loss, acc = test(epoch)
+    val_loss, acc1,acc5 = test(epoch)
     
     scheduler.step(epoch-1) # step cosine scheduling
     
     list_loss.append(val_loss)
-    list_acc.append(acc)
+    list_acc1.append(acc1)
+    list_acc5.append(acc5)
     
     # Log training..
     if usewandb:
-        wandb.log({'epoch': epoch, 'train_loss': trainloss, 'val_loss': val_loss, "val_acc": acc, "lr": optimizer.param_groups[0]["lr"],
+        wandb.log({'epoch': epoch, 'train_loss': trainloss, 'val_loss': val_loss, "val_top1_acc": acc1,"val_top5_acc":acc5, "lr": optimizer.param_groups[0]["lr"],
         "epoch_time": time.time()-start})
 
     # Write out csv..
@@ -403,8 +417,9 @@ for epoch in range(start_epoch, args.n_epochs):
     with open(csv_file, 'w') as f:
         writer = csv.writer(f, lineterminator='\n')
         writer.writerow(list_loss) 
-        writer.writerow(list_acc) 
-    print(list_loss)
+        writer.writerow(list_acc1)
+        writer.writerow(list_acc5) 
+    #print(list_loss)
 
 # writeout wandb
 if usewandb:
